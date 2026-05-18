@@ -24,7 +24,7 @@ app.use((req, res, next) => {
 app.use("/recognitions", recognitionsRoutes);
 
 app.get("/", (req, res) => {
-  res.send("Backend de reconocimiento funcionando");
+  res.send("VERSION NUEVA");
 });
 
 app.get("/health", (req, res) => {
