@@ -19,3 +19,7 @@ app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
 
+
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
