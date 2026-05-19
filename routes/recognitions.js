@@ -1,81 +1,104 @@
 const express = require("express");
 const router = express.Router();
 
-// Almacenamiento en memoria (temporal)
-const recognitions = [];
-const userStats = {};
+const recognitions = [];   // feed (solo últimos 4 días)
+const userStats = {};      // puntos acumulados por usuario
+const lastRecognizedAt = {}; // última vez que alguien fue reconocido (para regla 7 días)
+const lastTargetByGiver = {}; // última persona reconocida por cada "giver" (para evitar consecutivo por el mismo giver)
 
-function daysBetween(date1, date2) {
-  const diff = Math.abs(date2 - date1);
-  return diff / (1000 * 60 * 60 * 24);
+const FEED_DAYS = 4;
+const COOLDOWN_DAYS = 7;
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+function cutoffDate(days) {
+  return new Date(Date.now() - days * MS_PER_DAY);
 }
 
+function pruneFeed() {
+  const cutoff = cutoffDate(FEED_DAYS);
+  for (let i = recognitions.length - 1; i >= 0; i--) {
+    if (new Date(recognitions[i].createdAt) < cutoff) {
+      recognitions.splice(i, 1);
+    }
+  }
+}
+
+function daysSince(isoDate) {
+  if (!isoDate) return Infinity;
+  const diff = Date.now() - new Date(isoDate).getTime();
+  return diff / MS_PER_DAY;
+}
+
+// POST /recognitions
 router.post("/", (req, res) => {
+  pruneFeed();
+
   const { recognizedUser, recognizedBy, reason } = req.body;
 
   if (!recognizedUser || !recognizedBy || !reason) {
-    return res.status(400).send({ error: "Faltan datos" });
+    return res.status(400).json({ error: "Faltan datos" });
   }
 
-  const lastByUser = recognitions
-    .filter(r => r.recognizedBy === recognizedBy)
-    .slice(-1)[0];
+  const target = String(recognizedUser).toLowerCase().trim();
+  const giver = String(recognizedBy).toLowerCase().trim();
 
-  if (lastByUser && lastByUser.recognizedUser === recognizedUser) {
-    return res.status(400).send({
+  // Regla A: el mismo "giver" no puede reconocer a la misma persona dos veces seguidas
+  if (lastTargetByGiver[giver] && lastTargetByGiver[giver] === target) {
+    return res.status(400).json({
       error: "No puedes reconocer a la misma persona dos veces seguidas"
     });
   }
 
-  const lastRecognitionOfUser = recognitions
-    .filter(r => r.recognizedUser === recognizedUser)
-    .slice(-1)[0];
-
-  if (lastRecognitionOfUser) {
-    const days = daysBetween(
-      new Date(lastRecognitionOfUser.createdAt),
-      new Date()
-    );
-
-    if (days < 14) {
-      return res.status(400).send({
-        error: "Debes esperar al menos 14 días"
-      });
-    }
+  // Regla B: una persona no puede ser reconocida de manera continua -> cooldown 7 días
+  const days = daysSince(lastRecognizedAt[target]);
+  if (days < COOLDOWN_DAYS) {
+    const remaining = Math.ceil(COOLDOWN_DAYS - days);
+    return res.status(400).json({
+      error: `Debes esperar al menos 7 días para volver a reconocer a esta persona (faltan ~${remaining} día(s))`
+    });
   }
 
+  const points = 10;
+  const now = new Date().toISOString();
+
   const newRecognition = {
-    recognizedUser,
-    recognizedBy,
-    reason,
-    points: 10,
-    createdAt: new Date()
+    id: (globalThis.crypto?.randomUUID?.() || String(Date.now())),
+    recognizedUser: target,
+    recognizedBy: giver,
+    reason: String(reason).trim(),
+    points,
+    createdAt: now
   };
 
   recognitions.push(newRecognition);
 
-  if (!userStats[recognizedUser]) {
-    userStats[recognizedUser] = 0;
-  }
-  userStats[recognizedUser] += 10;
+  // puntos acumulados
+  userStats[target] = (userStats[target] || 0) + points;
 
-  res.status(201).send({
-    message: "Reconocimiento creado",
+  // actualiza reglas
+  lastRecognizedAt[target] = now;
+  lastTargetByGiver[giver] = target;
+
+  return res.status(201).json({
+    message: "Reconocimiento creado correctamente",
     recognition: newRecognition,
-    totalPoints: userStats[recognizedUser]
+    totalPoints: userStats[target]
   });
 });
 
+// GET /recognitions  (feed últimos 4 días)
 router.get("/", (req, res) => {
-  res.send(recognitions);
+  pruneFeed();
+  res.json(recognitions);
 });
 
+// GET /recognitions/leaderboard  (puntos acumulados)
 router.get("/leaderboard", (req, res) => {
   const leaderboard = Object.entries(userStats)
     .map(([user, points]) => ({ user, points }))
     .sort((a, b) => b.points - a.points);
 
-  res.send(leaderboard);
+  res.json(leaderboard);
 });
 
 module.exports = router;
