@@ -1,14 +1,23 @@
 const express = require("express");
 const router = express.Router();
 
-const recognitions = [];
-const userStats = {};
-const lastRecognizedAt = {};
-const lastTargetByGiver = {};
+const recognitions = [];        // feed (solo últimos 4 días)
+const userStats = {};           // puntos acumulados por persona
+const lastRecognizedAt = {};    // cooldown 7 días por persona reconocida
+const lastTargetByGiver = {};   // evita reconocer la misma persona dos veces seguidas por el mismo giver
 
 const FEED_DAYS = 4;
 const COOLDOWN_DAYS = 7;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+const IMPACT_VALUES = new Set([
+  "inclusion",
+  "mastery",
+  "purpose",
+  "action",
+  "curiosity",
+  "teamwork"
+]);
 
 function cutoffDate(days) {
   return new Date(Date.now() - days * MS_PER_DAY);
@@ -23,66 +32,102 @@ function pruneFeed() {
   }
 }
 
-function daysSince(date) {
-  if (!date) return Infinity;
-  return (Date.now() - new Date(date).getTime()) / MS_PER_DAY;
+function daysSince(dateIso) {
+  if (!dateIso) return Infinity;
+  return (Date.now() - new Date(dateIso).getTime()) / MS_PER_DAY;
 }
 
-// ✅ CREAR RECONOCIMIENTO
+function makeId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// ✅ POST /recognitions
 router.post("/", (req, res) => {
   pruneFeed();
 
-  const { recognizedUser, recognizedBy, reason } = req.body;
+  const { recognizedUser, recognizedBy, reason, impactValue } = req.body;
 
   if (!recognizedUser || !recognizedBy || !reason) {
     return res.status(400).json({ error: "Faltan datos" });
   }
 
-  // Regla 1: no consecutivo por mismo usuario
-  if (lastTargetByGiver[recognizedBy] === recognizedUser) {
+  const target = String(recognizedUser).trim();
+  const giver = String(recognizedBy).trim();
+  const value = String(impactValue || "").trim().toLowerCase();
+
+  if (!IMPACT_VALUES.has(value)) {
+    return res.status(400).json({
+      error:
+        "Selecciona un valor IMPACT válido: inclusion, mastery, purpose, action, curiosity, teamwork"
+    });
+  }
+
+  // Regla 1: no consecutivo por el mismo giver
+  if (lastTargetByGiver[giver] && lastTargetByGiver[giver] === target) {
     return res.status(400).json({
       error: "No puedes reconocer a la misma persona dos veces seguidas"
     });
   }
 
-  // Regla 2: 7 días antes de volver a reconocer
-  if (daysSince(lastRecognizedAt[recognizedUser]) < COOLDOWN_DAYS) {
+  // Regla 2: cooldown 7 días por persona reconocida (sin importar quién)
+  const days = daysSince(lastRecognizedAt[target]);
+  if (days < COOLDOWN_DAYS) {
+    const remaining = Math.ceil(COOLDOWN_DAYS - days);
     return res.status(400).json({
-      error: "Debes esperar 7 días para volver a reconocer a esta persona"
+      error: `Debes esperar 7 días para volver a reconocer a esta persona (faltan ~${remaining} día(s))`
     });
   }
 
+  const now = new Date().toISOString();
+  const points = 10;
+
   const newRec = {
-    id: Date.now(),
-    recognizedUser,
-    recognizedBy,
-    reason,
-    points: 10,
-    createdAt: new Date().toISOString()
+    id: makeId(),
+    recognizedUser: target,
+    recognizedBy: giver,
+    reason: String(reason).trim(),
+    impactValue: value,
+    points,
+    likes: 0,
+    createdAt: now
   };
 
   recognitions.push(newRec);
 
-  userStats[recognizedUser] = (userStats[recognizedUser] || 0) + 10;
-  lastRecognizedAt[recognizedUser] = newRec.createdAt;
-  lastTargetByGiver[recognizedBy] = recognizedUser;
+  userStats[target] = (userStats[target] || 0) + points;
+  lastRecognizedAt[target] = now;
+  lastTargetByGiver[giver] = target;
 
-  res.json(newRec);
+  return res.status(201).json(newRec);
 });
 
-// ✅ FEED (solo 4 días)
+// ✅ GET /recognitions  (feed últimos 4 días)
 router.get("/", (req, res) => {
   pruneFeed();
   res.json(recognitions);
 });
 
-// ✅ LEADERBOARD
+// ✅ GET /recognitions/leaderboard
 router.get("/leaderboard", (req, res) => {
   const board = Object.entries(userStats)
     .map(([name, points]) => ({ name, points }))
     .sort((a, b) => b.points - a.points);
 
   res.json(board);
+});
+
+// ✅ POST /recognitions/:id/like
+router.post("/:id/like", (req, res) => {
+  pruneFeed();
+  const { id } = req.params;
+
+  const rec = recognitions.find(r => r.id === id);
+  if (!rec) {
+    return res.status(404).json({ error: "Reconocimiento no encontrado (tal vez expiró)" });
+  }
+
+  rec.likes = (rec.likes || 0) + 1;
+  return res.json({ id: rec.id, likes: rec.likes });
 });
 
 module.exports = router;
