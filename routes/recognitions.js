@@ -1,10 +1,10 @@
 const express = require("express");
 const router = express.Router();
 
-const recognitions = [];   // feed (solo últimos 4 días)
-const userStats = {};      // puntos acumulados por usuario
-const lastRecognizedAt = {}; // última vez que alguien fue reconocido (para regla 7 días)
-const lastTargetByGiver = {}; // última persona reconocida por cada "giver" (para evitar consecutivo por el mismo giver)
+const recognitions = [];
+const userStats = {};
+const lastRecognizedAt = {};
+const lastTargetByGiver = {};
 
 const FEED_DAYS = 4;
 const COOLDOWN_DAYS = 7;
@@ -23,13 +23,12 @@ function pruneFeed() {
   }
 }
 
-function daysSince(isoDate) {
-  if (!isoDate) return Infinity;
-  const diff = Date.now() - new Date(isoDate).getTime();
-  return diff / MS_PER_DAY;
+function daysSince(date) {
+  if (!date) return Infinity;
+  return (Date.now() - new Date(date).getTime()) / MS_PER_DAY;
 }
 
-// POST /recognitions
+// ✅ CREAR RECONOCIMIENTO
 router.post("/", (req, res) => {
   pruneFeed();
 
@@ -39,66 +38,51 @@ router.post("/", (req, res) => {
     return res.status(400).json({ error: "Faltan datos" });
   }
 
-  const target = String(recognizedUser).toLowerCase().trim();
-  const giver = String(recognizedBy).toLowerCase().trim();
-
-  // Regla A: el mismo "giver" no puede reconocer a la misma persona dos veces seguidas
-  if (lastTargetByGiver[giver] && lastTargetByGiver[giver] === target) {
+  // Regla 1: no consecutivo por mismo usuario
+  if (lastTargetByGiver[recognizedBy] === recognizedUser) {
     return res.status(400).json({
       error: "No puedes reconocer a la misma persona dos veces seguidas"
     });
   }
 
-  // Regla B: una persona no puede ser reconocida de manera continua -> cooldown 7 días
-  const days = daysSince(lastRecognizedAt[target]);
-  if (days < COOLDOWN_DAYS) {
-    const remaining = Math.ceil(COOLDOWN_DAYS - days);
+  // Regla 2: 7 días antes de volver a reconocer
+  if (daysSince(lastRecognizedAt[recognizedUser]) < COOLDOWN_DAYS) {
     return res.status(400).json({
-      error: `Debes esperar al menos 7 días para volver a reconocer a esta persona (faltan ~${remaining} día(s))`
+      error: "Debes esperar 7 días para volver a reconocer a esta persona"
     });
   }
 
-  const points = 10;
-  const now = new Date().toISOString();
-
-  const newRecognition = {
-    id: (globalThis.crypto?.randomUUID?.() || String(Date.now())),
-    recognizedUser: target,
-    recognizedBy: giver,
-    reason: String(reason).trim(),
-    points,
-    createdAt: now
+  const newRec = {
+    id: Date.now(),
+    recognizedUser,
+    recognizedBy,
+    reason,
+    points: 10,
+    createdAt: new Date().toISOString()
   };
 
-  recognitions.push(newRecognition);
+  recognitions.push(newRec);
 
-  // puntos acumulados
-  userStats[target] = (userStats[target] || 0) + points;
+  userStats[recognizedUser] = (userStats[recognizedUser] || 0) + 10;
+  lastRecognizedAt[recognizedUser] = newRec.createdAt;
+  lastTargetByGiver[recognizedBy] = recognizedUser;
 
-  // actualiza reglas
-  lastRecognizedAt[target] = now;
-  lastTargetByGiver[giver] = target;
-
-  return res.status(201).json({
-    message: "Reconocimiento creado correctamente",
-    recognition: newRecognition,
-    totalPoints: userStats[target]
-  });
+  res.json(newRec);
 });
 
-// GET /recognitions  (feed últimos 4 días)
+// ✅ FEED (solo 4 días)
 router.get("/", (req, res) => {
   pruneFeed();
   res.json(recognitions);
 });
 
-// GET /recognitions/leaderboard  (puntos acumulados)
+// ✅ LEADERBOARD
 router.get("/leaderboard", (req, res) => {
-  const leaderboard = Object.entries(userStats)
-    .map(([user, points]) => ({ user, points }))
+  const board = Object.entries(userStats)
+    .map(([name, points]) => ({ name, points }))
     .sort((a, b) => b.points - a.points);
 
-  res.json(leaderboard);
+  res.json(board);
 });
 
 module.exports = router;
