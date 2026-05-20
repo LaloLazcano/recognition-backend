@@ -1,10 +1,10 @@
 const express = require("express");
 const router = express.Router();
 
-const recognitions = [];        // feed (solo últimos 4 días)
-const userStats = {};           // puntos acumulados por persona
-const lastRecognizedAt = {};    // cooldown 7 días por persona reconocida
-const lastTargetByGiver = {};   // evita reconocer la misma persona dos veces seguidas por el mismo giver
+const recognitions = [];          // feed (últimos 4 días)
+const userStats = {};             // puntos acumulados por persona
+const lastRecognizedAt = {};      // última vez que alguien fue reconocido
+const lastTargetByGiver = {};     // evita reconocer consecutivo por el mismo giver
 
 const FEED_DAYS = 4;
 const COOLDOWN_DAYS = 7;
@@ -55,21 +55,25 @@ router.post("/", (req, res) => {
   const giver = String(recognizedBy).trim();
   const value = String(impactValue || "").trim().toLowerCase();
 
+  // Regla nueva: no auto-reconocimiento
+  if (target.toLowerCase() === giver.toLowerCase()) {
+    return res.status(400).json({ error: "No puedes felicitarte a ti mismo" });
+  }
+
   if (!IMPACT_VALUES.has(value)) {
     return res.status(400).json({
-      error:
-        "Selecciona un valor IMPACT válido: inclusion, mastery, purpose, action, curiosity, teamwork"
+      error: "Selecciona un valor IMPACT válido (Inclusion, Mastery, Purpose, Action, Curiosity, Teamwork)"
     });
   }
 
-  // Regla 1: no consecutivo por el mismo giver
-  if (lastTargetByGiver[giver] && lastTargetByGiver[giver] === target) {
+  // Regla: no consecutivo por el mismo giver
+  if (lastTargetByGiver[giver] && lastTargetByGiver[giver].toLowerCase() === target.toLowerCase()) {
     return res.status(400).json({
       error: "No puedes reconocer a la misma persona dos veces seguidas"
     });
   }
 
-  // Regla 2: cooldown 7 días por persona reconocida (sin importar quién)
+  // Regla: cooldown 7 días por persona reconocida
   const days = daysSince(lastRecognizedAt[target]);
   if (days < COOLDOWN_DAYS) {
     const remaining = Math.ceil(COOLDOWN_DAYS - days);
@@ -79,7 +83,7 @@ router.post("/", (req, res) => {
   }
 
   const now = new Date().toISOString();
-  const points = 10;
+  const points = 1; // ✅ ahora 1 en 1
 
   const newRec = {
     id: makeId(),
@@ -101,7 +105,7 @@ router.post("/", (req, res) => {
   return res.status(201).json(newRec);
 });
 
-// ✅ GET /recognitions  (feed últimos 4 días)
+// ✅ GET /recognitions (feed últimos 4 días)
 router.get("/", (req, res) => {
   pruneFeed();
   res.json(recognitions);
@@ -114,6 +118,15 @@ router.get("/leaderboard", (req, res) => {
     .sort((a, b) => b.points - a.points);
 
   res.json(board);
+});
+
+// ✅ GET /recognitions/stats  (para panel "pendientes")
+router.get("/stats", (req, res) => {
+  // no necesitamos prune aquí, stats es acumulado
+  res.json({
+    pointsByName: userStats,
+    lastRecognizedAt: lastRecognizedAt
+  });
 });
 
 // ✅ POST /recognitions/:id/like
